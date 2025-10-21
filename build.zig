@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
     const dynamic = b.option(bool, "dynamic", "Link against libspng, libjpeg and libtiff dynamically") orelse false;
     const libc_file = b.option(std.Build.LazyPath, "libc_file", "Path to a custom libc file to use") orelse null;
-    const build_lib = b.option(bool, "build_lib", "Build the library") orelse false;
+    const build_lib = b.option(bool, "build_lib", "Build the library instead of exe") orelse false;
 
     const native_target = b.resolveTargetQuery(.{});
     const is_cross_compiling = target.result.cpu.arch != native_target.result.cpu.arch or
@@ -18,9 +18,10 @@ pub fn build(b: *std.Build) !void {
     const build_options_mod = build_options.createModule();
 
     const lib_mod, const exe = buildOdiff(b, target, optimize, dynamic, build_options_mod, libc_file);
-    b.installArtifact(exe);
 
-    if (build_lib) {
+    if (!build_lib) {
+        b.installArtifact(exe);
+    } else {
         const lib = b.addLibrary(.{
             .name = "odiff",
             .linkage = .static,
