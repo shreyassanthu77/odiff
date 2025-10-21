@@ -6,6 +6,7 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const dynamic = b.option(bool, "dynamic", "Link against libspng, libjpeg and libtiff dynamically") orelse false;
+    const libc_file = b.option(std.Build.LazyPath, "libc_file", "Path to a custom libc file to use") orelse null;
 
     const native_target = b.resolveTargetQuery(.{});
     const is_cross_compiling = target.result.cpu.arch != native_target.result.cpu.arch or
@@ -15,7 +16,7 @@ pub fn build(b: *std.Build) !void {
     build_options.addOption([]const u8, "version", manifest.version);
     const build_options_mod = build_options.createModule();
 
-    const lib_mod, const exe = buildOdiff(b, target, optimize, dynamic, build_options_mod);
+    const lib_mod, const exe = buildOdiff(b, target, optimize, dynamic, build_options_mod, libc_file);
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
@@ -28,6 +29,15 @@ pub fn build(b: *std.Build) !void {
 
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
+
+    const lib_step = b.step("lib", "Build the library");
+    const libodiff = b.addLibrary(.{
+        .name = "odiff",
+        .linkage = .static,
+        .root_module = lib_mod,
+    });
+    if (libc_file) |lf| libodiff.setLibCFile(lf);
+    lib_step.dependOn(&b.addInstallArtifact(libodiff, .{}).step);
 
     const lib_unit_tests = b.addTest(.{
         .root_module = lib_mod,
@@ -69,7 +79,7 @@ pub fn build(b: *std.Build) !void {
             integration_test.root_module.addImport("build_options", build_options_mod);
             integration_test.linkLibC();
             integration_test.linkLibrary(root_lib);
-            linkDeps(b, target, optimize, dynamic, integration_test.root_module);
+            linkDeps(b, target, optimize, dynamic, integration_test.root_module, libc_file);
 
             const run_integration_test = b.addRunArtifact(integration_test);
             integration_test_steps.append(run_integration_test) catch @panic("OOM");
@@ -109,7 +119,7 @@ pub fn build(b: *std.Build) !void {
     const build_ci_step = b.step("ci", "Build the app for CI");
     for (build_targets) |target_query| {
         const t = b.resolveTargetQuery(target_query);
-        _, const odiff_exe = buildOdiff(b, t, optimize, dynamic, build_options_mod);
+        _, const odiff_exe = buildOdiff(b, t, optimize, dynamic, build_options_mod, libc_file);
         odiff_exe.root_module.strip = true;
         var target_name = try target_query.zigTriple(b.allocator);
         if (target_query.cpu_arch == .riscv64 and !target_query.cpu_features_add.isEmpty())
@@ -129,6 +139,7 @@ fn buildOdiff(
     optimize: std.builtin.OptimizeMode,
     dynamic: bool,
     build_options_mod: *std.Build.Module,
+    libc_file: ?std.Build.LazyPath,
 ) struct { *std.Build.Module, *std.Build.Step.Compile } {
     const lib_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
@@ -136,7 +147,7 @@ fn buildOdiff(
         .optimize = optimize,
         .link_libc = true,
     });
-    linkDeps(b, target, optimize, dynamic, lib_mod);
+    linkDeps(b, target, optimize, dynamic, lib_mod, libc_file);
 
     var c_flags = std.array_list.Managed([]const u8).init(b.allocator);
     defer c_flags.deinit();
@@ -191,7 +202,14 @@ fn buildOdiff(
     return .{ lib_mod, exe };
 }
 
-pub fn linkDeps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, dynamic: bool, module: *std.Build.Module) void {
+pub fn linkDeps(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    dynamic: bool,
+    module: *std.Build.Module,
+    libc_file: ?std.Build.LazyPath,
+) void {
     const host_target = b.graph.host.result;
     const build_target = target.result;
     const is_cross_compiling = host_target.cpu.arch != build_target.cpu.arch or
@@ -200,9 +218,13 @@ pub fn linkDeps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
         switch (build_target.os.tag) {
             .windows => {
                 std.log.warn("Dynamic linking is not supported on Windows, falling back to static linking", .{});
-                return linkDeps(b, target, optimize, false, module);
+                return linkDeps(b, target, optimize, false, module, libc_file);
             },
             else => {
+                if (build_target.abi.isAndroid()) {
+                    std.log.warn("Dynamic linking is not supported on Android, falling back to static linking", .{});
+                    return linkDeps(b, target, optimize, false, module, libc_file);
+                }
                 module.linkSystemLibrary("spng", .{});
                 module.linkSystemLibrary("jpeg", .{});
                 module.linkSystemLibrary("tiff", .{});
@@ -216,6 +238,7 @@ pub fn linkDeps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
             .spng = .{},
             .tiff = .{},
             .webp = .{},
+            .libc_file = libc_file,
         }) catch @panic("Failed to link required dependencies, please create an issue on the repo :)");
     }
 }
