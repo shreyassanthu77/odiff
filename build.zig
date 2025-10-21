@@ -7,6 +7,7 @@ pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
     const dynamic = b.option(bool, "dynamic", "Link against libspng, libjpeg and libtiff dynamically") orelse false;
     const libc_file = b.option(std.Build.LazyPath, "libc_file", "Path to a custom libc file to use") orelse null;
+    const build_lib = b.option(bool, "build_lib", "Build the library") orelse false;
 
     const native_target = b.resolveTargetQuery(.{});
     const is_cross_compiling = target.result.cpu.arch != native_target.result.cpu.arch or
@@ -19,6 +20,16 @@ pub fn build(b: *std.Build) !void {
     const lib_mod, const exe = buildOdiff(b, target, optimize, dynamic, build_options_mod, libc_file);
     b.installArtifact(exe);
 
+    if (build_lib) {
+        const lib = b.addLibrary(.{
+            .name = "odiff",
+            .linkage = .static,
+            .root_module = lib_mod,
+        });
+        if (libc_file) |lf| lib.setLibCFile(lf);
+        b.installArtifact(lib);
+    }
+
     const run_cmd = b.addRunArtifact(exe);
 
     run_cmd.step.dependOn(b.getInstallStep());
@@ -29,15 +40,6 @@ pub fn build(b: *std.Build) !void {
 
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
-
-    const lib_step = b.step("lib", "Build the library");
-    const libodiff = b.addLibrary(.{
-        .name = "odiff",
-        .linkage = .static,
-        .root_module = lib_mod,
-    });
-    if (libc_file) |lf| libodiff.setLibCFile(lf);
-    lib_step.dependOn(&b.addInstallArtifact(libodiff, .{}).step);
 
     const lib_unit_tests = b.addTest(.{
         .root_module = lib_mod,
